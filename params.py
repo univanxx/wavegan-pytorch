@@ -45,7 +45,7 @@ if not(os.path.isdir(output_dir)):
 window_length = 65536 #[16384, 32768, 65536] in case of a longer window change model_capacity_size to 32
 sampling_rate = 16000
 normalize_audio = True 
-num_channels = 1
+num_channels = 8
 
 #############################
 # Logger init

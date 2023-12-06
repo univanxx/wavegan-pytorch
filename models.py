@@ -38,7 +38,7 @@ class Transpose1dLayer(nn.Module):
 
     def forward(self, x):
         if self.upsample:
-            # recommended by wavgan paper to use nearest upsampling
+            # recommended by wavegan paper to use nearest upsampling
             x = nn.functional.interpolate(x, scale_factor=self.upsample, mode="nearest")
         return self.transpose_ops(x)
 
@@ -133,11 +133,9 @@ class WaveGANGenerator(nn.Module):
         num_channels=1,
         verbose=False,
         upsample=True,
-        slice_len=16384,
         use_batch_norm=False,
     ):
         super(WaveGANGenerator, self).__init__()
-        assert slice_len in [16384, 32768, 65536]  # used to predict longer utterances
 
         self.ngpus = ngpus
         self.model_size = model_size  # d
@@ -146,15 +144,15 @@ class WaveGANGenerator(nn.Module):
         self.verbose = verbose
         self.use_batch_norm = use_batch_norm
 
-        self.dim_mul = 16 if slice_len == 16384 else 32
+        self.dim_mul = 16
 
-        self.fc1 = nn.Linear(latent_dim, 4 * 4 * model_size * self.dim_mul)
+        self.fc1 = nn.Linear(latent_dim, 5 * 8 * model_size * self.dim_mul)
         self.bn1 = nn.BatchNorm1d(num_features=model_size * self.dim_mul)
 
-        stride = 4
+        stride = 2
         if upsample:
             stride = 1
-            upsample = 4
+            upsample = 2
 
         deconv_layers = [
             Transpose1dLayer(
@@ -190,45 +188,16 @@ class WaveGANGenerator(nn.Module):
                 use_batch_norm=use_batch_norm,
             ),
         ]
-
-        if slice_len == 16384:
-            deconv_layers.append(
-                Transpose1dLayer(
-                    (self.dim_mul * model_size) // 16,
-                    num_channels,
-                    25,
-                    stride,
-                    upsample=upsample,
-                )
+         
+        deconv_layers.append(
+            Transpose1dLayer(
+                (self.dim_mul * model_size) // 16,
+                num_channels,
+                15,
+                stride,
+                upsample=4,
             )
-        elif slice_len == 32768:
-            deconv_layers += [
-                Transpose1dLayer(
-                    (self.dim_mul * model_size) // 16,
-                    model_size,
-                    25,
-                    stride,
-                    upsample=upsample,
-                    use_batch_norm=use_batch_norm,
-                ),
-                Transpose1dLayer(model_size, num_channels, 25, 2, upsample=upsample),
-            ]
-        elif slice_len == 65536:
-            deconv_layers += [
-                Transpose1dLayer(
-                    (self.dim_mul * model_size) // 16,
-                    model_size,
-                    25,
-                    stride,
-                    upsample=upsample,
-                    use_batch_norm=use_batch_norm,
-                ),
-                Transpose1dLayer(
-                    model_size, num_channels, 25, stride, upsample=upsample
-                ),
-            ]
-        else:
-            raise ValueError("slice_len {} value is not supported".format(slice_len))
+        ) 
 
         self.deconv_list = nn.ModuleList(deconv_layers)
         for m in self.modules():
@@ -236,7 +205,8 @@ class WaveGANGenerator(nn.Module):
                 nn.init.kaiming_normal_(m.weight.data)
 
     def forward(self, x):
-        x = self.fc1(x).view(-1, self.dim_mul * self.model_size, 16)
+
+        x = self.fc1(x).view(-1, self.dim_mul * self.model_size, 5*8)
         if self.use_batch_norm:
             x = self.bn1(x)
         x = F.relu(x)
@@ -260,11 +230,9 @@ class WaveGANDiscriminator(nn.Module):
         shift_factor=2,
         alpha=0.2,
         verbose=False,
-        slice_len=16384,
         use_batch_norm=False,
     ):
         super(WaveGANDiscriminator, self).__init__()
-        assert slice_len in [16384, 32768, 65536]  # used to predict longer utterances
 
         self.model_size = model_size  # d
         self.ngpus = ngpus
@@ -279,8 +247,8 @@ class WaveGANDiscriminator(nn.Module):
                 num_channels,
                 model_size,
                 25,
-                stride=4,
-                padding=11,
+                stride=2,
+                padding=12,
                 use_batch_norm=use_batch_norm,
                 alpha=alpha,
                 shift_factor=shift_factor,
@@ -289,8 +257,8 @@ class WaveGANDiscriminator(nn.Module):
                 model_size,
                 2 * model_size,
                 25,
-                stride=4,
-                padding=11,
+                stride=2,
+                padding=12,
                 use_batch_norm=use_batch_norm,
                 alpha=alpha,
                 shift_factor=shift_factor,
@@ -299,8 +267,8 @@ class WaveGANDiscriminator(nn.Module):
                 2 * model_size,
                 4 * model_size,
                 25,
-                stride=4,
-                padding=11,
+                stride=2,
+                padding=12,
                 use_batch_norm=use_batch_norm,
                 alpha=alpha,
                 shift_factor=shift_factor,
@@ -309,8 +277,8 @@ class WaveGANDiscriminator(nn.Module):
                 4 * model_size,
                 8 * model_size,
                 25,
-                stride=4,
-                padding=11,
+                stride=2,
+                padding=12,
                 use_batch_norm=use_batch_norm,
                 alpha=alpha,
                 shift_factor=shift_factor,
@@ -319,42 +287,28 @@ class WaveGANDiscriminator(nn.Module):
                 8 * model_size,
                 16 * model_size,
                 25,
-                stride=4,
-                padding=11,
+                stride=2,
+                padding=12,
                 use_batch_norm=use_batch_norm,
                 alpha=alpha,
-                shift_factor=0 if slice_len == 16384 else shift_factor,
+                shift_factor=shift_factor
             ),
         ]
+
         self.fc_input_size = 256 * model_size
-        if slice_len == 32768:
-            conv_layers.append(
-                Conv1D(
-                    16 * model_size,
-                    32 * model_size,
-                    25,
-                    stride=2,
-                    padding=11,
-                    use_batch_norm=use_batch_norm,
-                    alpha=alpha,
-                    shift_factor=0,
-                )
+        conv_layers.append(
+            Conv1D(
+                16 * model_size,
+                32 * model_size,
+                25,
+                stride=2,
+                padding=12,
+                use_batch_norm=use_batch_norm,
+                alpha=alpha,
+                shift_factor=0,
             )
-            self.fc_input_size = 480 * model_size
-        elif slice_len == 65536:
-            conv_layers.append(
-                Conv1D(
-                    16 * model_size,
-                    32 * model_size,
-                    25,
-                    stride=4,
-                    padding=11,
-                    use_batch_norm=use_batch_norm,
-                    alpha=alpha,
-                    shift_factor=0,
-                )
-            )
-            self.fc_input_size = 512 * model_size
+        )
+        self.fc_input_size = 1280 * model_size
 
         self.conv_layers = nn.ModuleList(conv_layers)
 
@@ -379,19 +333,19 @@ class WaveGANDiscriminator(nn.Module):
 if __name__ == "__main__":
     from torch.autograd import Variable
 
-    for slice_len in [16384, 32768, 65536]:
+    G = WaveGANGenerator(
+        verbose=True, upsample=True, use_batch_norm=True, num_channels=num_channels
+    )
+    z = Variable(torch.randn(10, noise_latent_dim))
+    print("z shape", z.shape)
+    print("num channels", num_channels)
+    out = G(z)
+    print("out shape", out.shape)
+    print("==========================")
 
-        G = WaveGANGenerator(
-            verbose=True, upsample=True, use_batch_norm=True, slice_len=slice_len
-        )
-        out = G(Variable(torch.randn(10, noise_latent_dim)))
-        print(out.shape)
-        assert out.shape == (10, 1, slice_len)
-        print("==========================")
-
-        D = WaveGANDiscriminator(verbose=True, use_batch_norm=True, slice_len=slice_len)
-        out2 = D(Variable(torch.randn(10, 1, slice_len)))
-        print(out2.shape)
-        assert out2.shape == (10, 1)
-        print("==========================")
+    D = WaveGANDiscriminator(verbose=True, use_batch_norm=True, num_channels=8)
+    out2 = D(Variable(torch.randn(10, 8, 2560)))
+    print(out2.shape)
+    assert out2.shape == (10, 1)
+    print("==========================")
 

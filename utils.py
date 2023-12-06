@@ -1,16 +1,16 @@
 import os
 import time
-import math
 import torch
-import random
-import librosa
-import librosa.display
 import numpy as np
-from torch.utils import data
-import matplotlib
 import matplotlib.pyplot as plt
-import glob
-import pescador
+
+##########
+import sys
+sys.path.append("../../data")
+from PTBXLToDataset import CVConditional
+from torch.utils.data import DataLoader
+##########
+
 import torch.nn as nn
 from torch.autograd import Variable
 from params import *
@@ -39,23 +39,20 @@ def make_path(output_path):
 #############################
 # Plotting utils
 #############################
-def visualize_audio(audio_tensor, is_monphonic=False):
+def plot_ecgs(tensor):
     # takes a batch ,n channels , window length and plots the spectogram
-    input_audios = audio_tensor.detach().cpu().numpy()
-    plt.figure(figsize=(18, 50))
-    for i, audio in enumerate(input_audios):
-        plt.subplot(10, 2, i + 1)
-        if is_monphonic:
-            plt.title("Monophonic %i" % (i + 1))
-            librosa.display.waveplot(audio[0], sr=sampling_rate)
-        else:
-            D = librosa.amplitude_to_db(np.abs(librosa.stft(audio[0])), ref=np.max)
-            librosa.display.specshow(D, y_axis="linear")
-            plt.colorbar(format="%+2.0f dB")
-            plt.title("Linear-frequency power spectrogram %i" % (i + 1))
-    if not (os.path.isdir("visualization")):
-        os.makedirs("visualization")
-    plt.savefig("visualization/interpolation.png")
+    inputs = tensor.detach().cpu().numpy()
+    fig, axs = plt.subplots(3, inputs.shape[0], figsize=(18, 50))
+    fig.suptitle("Generated I, III and VI leads")
+    for i, inp in enumerate(inputs):
+        axs[0][i].plot(inp[0])
+        axs[1][i].plot(inp[1])
+        axs[2][i].plot(inp[2])
+    return fig
+
+    # if not (os.path.isdir("visualization")):
+    #     os.makedirs("visualization")
+    # plt.savefig("visualization/interpolation.png")
 
 
 def visualize_loss(loss_1, loss_2, first_legend, second_legend, y_label):
@@ -74,7 +71,7 @@ def visualize_loss(loss_1, loss_2, first_legend, second_legend, y_label):
     plt.savefig("visualization/loss.png")
 
 
-def latent_space_interpolation(model, n_samples=10):
+def latent_space_interpolation(model, logger, global_step, n_samples=5):
     z_test = sample_noise(2)
     with torch.no_grad():
         interpolates = []
@@ -83,93 +80,9 @@ def latent_space_interpolation(model, n_samples=10):
             interpolates.append(interpolate_vec)
 
         interpolates = torch.stack(interpolates)
-        generated_audio = model(interpolates)
-    visualize_audio(generated_audio, True)
+        generated = model(interpolates)
 
-
-#############################
-# Wav files utils
-#############################
-# Fast loading used with wav files only of 8 bits
-def load_wav(wav_file_path):
-    try:
-        audio_data, _ = librosa.load(wav_file_path, sr=sampling_rate)
-
-        if normalize_audio:
-            # Clip magnitude
-            max_mag = np.max(np.abs(audio_data))
-            if max_mag > 1:
-                audio_data /= max_mag
-    except Exception as e:
-        LOGGER.error("Could not load {}: {}".format(wav_file_path, str(e)))
-        raise e
-    audio_len = len(audio_data)
-    if audio_len < window_length:
-        pad_length = window_length - audio_len
-        left_pad = pad_length // 2
-        right_pad = pad_length - left_pad
-        audio_data = np.pad(audio_data, (left_pad, right_pad), mode="constant")
-
-    return audio_data.astype("float32")
-
-
-def sample_audio(audio_data, start_idx=None, end_idx=None):
-    audio_len = len(audio_data)
-    if audio_len == window_length:
-        # If we only have a single 1*window_length audio, just yield.
-        sample = audio_data
-    else:
-        # Sample a random window from the audio
-        if start_idx is None or end_idx is None:
-            start_idx = np.random.randint(0, (audio_len - window_length) // 2)
-            end_idx = start_idx + window_length
-        sample = audio_data[start_idx:end_idx]
-    sample = sample.astype("float32")
-    assert not np.any(np.isnan(sample))
-    return sample, start_idx, end_idx
-
-
-def sample_buffer(buffer_data, start_idx=None, end_idx=None):
-    audio_len = len(buffer_data) // 4
-    if audio_len == window_length:
-        # If we only have a single 1*window_length audio, just yield.
-        sample = buffer_data
-    else:
-        # Sample a random window from the audio
-        if start_idx is None or end_idx is None:
-            start_idx = np.random.randint(0, (audio_len - window_length) // 2)
-            end_idx = start_idx + window_length
-        sample = buffer_data[start_idx * 4 : end_idx * 4]
-    return sample, start_idx, end_idx
-
-
-def wav_generator(file_path):
-    audio_data = load_wav(file_path)
-    while True:
-        sample, _, _ = sample_audio(audio_data)
-        yield {"single": sample}
-
-
-def create_stream_reader(single_signal_file_list):
-    data_streams = []
-    for audio_path in single_signal_file_list:
-        stream = pescador.Streamer(wav_generator, audio_path)
-        data_streams.append(stream)
-    mux = pescador.ShuffledMux(data_streams)
-    batch_gen = pescador.buffer_stream(mux, batch_size)
-    return batch_gen
-
-
-def save_samples(epoch_samples, epoch):
-    """
-    Save output samples.
-    """
-    sample_dir = make_path(os.path.join(output_dir, str(epoch)))
-
-    for idx, sample in enumerate(epoch_samples):
-        output_path = os.path.join(sample_dir, "{}.wav".format(idx + 1))
-        sample = sample[0]
-        librosa.output.write_wav(output_path, sample, sampling_rate)
+    logger.add_figure('generated ecgs', plot_ecgs(generated), global_step)
 
 
 #############################
@@ -210,28 +123,40 @@ def weights_init(m):
 # Creating Data Loader and Sampler
 #############################
 class WavDataLoader:
-    def __init__(self, folder_path, audio_extension="wav"):
-        self.signal_paths = get_recursive_files(folder_path, audio_extension)
-        self.data_iter = None
+    def __init__(self, class_name, input_size, fold_idx, data_dir, sample, equal, smooth, filter, batch_size, dtype="train"):
+
+        if sample:
+            stype = "gan_sample"
+        elif equal:
+            stype = "gan_equal"
+        else:
+            stype = "gan_no_sample"
+            
+        self.signals_ds = CVConditional(class_name, input_size // 10, fold_idx, data_dir, type=stype, option=dtype, smooth=smooth, filter=filter, gan=True)
+        if dtype == "train":
+            self.signals_dl = DataLoader(self.signals_ds, shuffle=True, pin_memory=True,
+                                        batch_size=batch_size, num_workers=4, drop_last=True)
+        else:
+            self.signals_dl = DataLoader(self.signals_ds, shuffle=False, pin_memory=True,
+                                        batch_size=batch_size, num_workers=4, drop_last=True)
         self.initialize_iterator()
 
     def initialize_iterator(self):
-        data_iter = create_stream_reader(self.signal_paths)
-        self.data_iter = iter(data_iter)
+        self.data_iter = iter(self.signals_dl)
 
     def __len__(self):
-        return len(self.signal_paths)
-
-    def numpy_to_tensor(self, numpy_array):
-        numpy_array = numpy_array[:, np.newaxis, :]
-        return torch.Tensor(numpy_array).to(device)
+        return len(self.signals_dl)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        x = next(self.data_iter)
-        return self.numpy_to_tensor(x["single"])
+        try:
+            x = next(self.data_iter)
+        except StopIteration:
+            self.initialize_iterator()
+            x = next(self.data_iter)
+        return x
 
 
 if __name__ == "__main__":

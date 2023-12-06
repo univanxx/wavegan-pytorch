@@ -5,6 +5,7 @@ import torch.optim as optim
 import torch
 from torch.autograd import grad, Variable
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 
 class WaveGan_GP(object):
@@ -17,7 +18,6 @@ class WaveGan_GP(object):
         self.valid_reconstruction = []
 
         self.discriminator = WaveGANDiscriminator(
-            slice_len=window_length,
             model_size=model_capacity_size,
             use_batch_norm=use_batchnorm,
             num_channels=num_channels,
@@ -25,7 +25,6 @@ class WaveGan_GP(object):
         self.discriminator.apply(weights_init)
 
         self.generator = WaveGANGenerator(
-            slice_len=window_length,
             model_size=model_capacity_size,
             use_batch_norm=use_batchnorm,
             num_channels=num_channels,
@@ -45,12 +44,16 @@ class WaveGan_GP(object):
         self.validate = validate
         self.n_samples_per_batch = len(train_loader)
 
+        self.logger = SummaryWriter("./ecg_model")
+
     def calculate_discriminator_loss(self, real, generated):
         disc_out_gen = self.discriminator(generated)
         disc_out_real = self.discriminator(real)
 
         alpha = torch.FloatTensor(batch_size, 1, 1).uniform_(0, 1).to(device)
         alpha = alpha.expand(batch_size, real.size(1), real.size(2))
+
+        print(real.data.shape, generated.data.shape, alpha.shape)
 
         interpolated = (1 - alpha) * real.data + (alpha) * generated.data[:batch_size]
         interpolated = Variable(interpolated, requires_grad=True)
@@ -104,7 +107,7 @@ class WaveGan_GP(object):
             device
         )  # used to save samples every few epochs
 
-        gan_model_name = "gan_{}.tar".format(model_prefix)
+        gan_model_name = "./ecg_model/gan_{}.tar".format(model_prefix)
 
         first_iter = 0
         if take_backup and os.path.isfile(gan_model_name):
@@ -122,19 +125,16 @@ class WaveGan_GP(object):
             self.g_cost = checkpoint["g_cost"]
 
             first_iter = checkpoint["n_iterations"]
-            for i in range(0, first_iter, progress_bar_step_iter_size):
+            for _ in range(0, first_iter, progress_bar_step_iter_size):
                 progress_bar.update()
             self.generator.eval()
-            with torch.no_grad():
-                fake = self.generator(fixed_noise).detach().cpu().numpy()
-            save_samples(fake, first_iter)
+
         self.generator.train()
         self.discriminator.train()
         for iter_indx in range(first_iter, n_iterations):
             self.enable_disc_disable_gen()
             for _ in range(n_critic):
-                real_signal = next(self.train_loader)
-
+                real_signal, label = next(self.train_loader)
                 # need to add mixed signal and flag
                 noise = sample_noise(batch_size * generator_batch_size_factor)
                 generated = self.generator(noise)
@@ -143,7 +143,7 @@ class WaveGan_GP(object):
                 #############################
                 self.apply_zero_grad()
                 disc_cost, disc_wd = self.calculate_discriminator_loss(
-                    real_signal.data, generated.data
+                    real_signal.to(device).data, generated.data
                 )
                 assert not (torch.isnan(disc_cost))
                 disc_cost.backward()
@@ -157,6 +157,8 @@ class WaveGan_GP(object):
                     val_discriminator_output = self.discriminator(val_real)
                     val_generator_cost = val_discriminator_output.mean()
                     self.valid_g_cost.append(val_generator_cost.item())
+
+                self.logger.add_scalar('Val/Loss_G', val_generator_cost.item(), iter_indx)
 
             #############################
             # (2) Update G network every n_critic steps
@@ -176,6 +178,9 @@ class WaveGan_GP(object):
                 self.train_d_cost.append(disc_cost.item())
                 self.train_w_distance.append(disc_wd.item() * -1)
 
+                self.logger.add_scalar('Train/Loss_D WD', self.train_w_distance[-1], iter_indx)
+                self.logger.add_scalar('Train/Loss_G', generator_cost.item() * -1, iter_indx)
+
                 progress_updates = {
                     "Loss_D WD": str(self.train_w_distance[-1]),
                     "Loss_G": str(self.g_cost[-1]),
@@ -194,9 +199,7 @@ class WaveGan_GP(object):
 
             if iter_indx % save_samples_every == 0:
                 with torch.no_grad():
-                    latent_space_interpolation(self.generator, n_samples=2)
-                    fake = self.generator(fixed_noise).detach().cpu().numpy()
-                save_samples(fake, iter_indx)
+                    latent_space_interpolation(self.generator, logger=self.logger, global_step=iter_indx, n_samples=2) 
 
             if take_backup and iter_indx % backup_every_n_iters == 0:
                 saving_dict = {
@@ -216,8 +219,12 @@ class WaveGan_GP(object):
 
 
 if __name__ == "__main__":
-    train_loader = WavDataLoader(os.path.join(target_signals_dir, "train"))
-    val_loader = WavDataLoader(os.path.join(target_signals_dir, "valid"))
+    train_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=0, 
+                                 data_dir='/home/jovyan/isviridov/gans/gan_ecg/data/', 
+                                 sample=True, equal=False, smooth=False, filter=False, batch_size=batch_size, dtype="train")
+    val_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=0, 
+                                 data_dir='/home/jovyan/isviridov/gans/gan_ecg/data/', 
+                                 sample=True, equal=False, smooth=False, filter=False, batch_size=batch_size, dtype="val")
 
     wave_gan = WaveGan_GP(train_loader, val_loader)
     wave_gan.train()
