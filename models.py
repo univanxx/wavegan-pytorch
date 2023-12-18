@@ -143,7 +143,7 @@ class WaveGANGenerator(nn.Module):
         latent_dim = noise_latent_dim
         self.verbose = verbose
         self.use_batch_norm = use_batch_norm
-
+        self.conditional = nn.Parameter(torch.rand(size=(2, latent_dim)), requires_grad=True)
         self.dim_mul = 16
 
         self.fc1 = nn.Linear(latent_dim, 5 * 8 * model_size * self.dim_mul)
@@ -204,8 +204,8 @@ class WaveGANGenerator(nn.Module):
             if isinstance(m, nn.ConvTranspose1d) or isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight.data)
 
-    def forward(self, x):
-
+    def forward(self, x, label):
+        x += self.conditional[label]  # conditional feature
         x = self.fc1(x).view(-1, self.dim_mul * self.model_size, 5*8)
         if self.use_batch_norm:
             x = self.bn1(x)

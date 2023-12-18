@@ -39,23 +39,19 @@ def make_path(output_path):
 #############################
 # Plotting utils
 #############################
-def plot_ecgs(tensor):
+def plot_ecgs(tensor, label):
     # takes a batch ,n channels , window length and plots the spectogram
     inputs = tensor.detach().cpu().numpy()
-    fig, axs = plt.subplots(3, inputs.shape[0], figsize=(18, 50))
-    fig.suptitle("Generated I, III and VI leads")
+    fig, axs = plt.subplots(3, inputs.shape[0], figsize=(50, 20))
+    fig.suptitle("Generated I, III and VI leads for class {}".format(label))
     for i, inp in enumerate(inputs):
         axs[0][i].plot(inp[0])
         axs[1][i].plot(inp[1])
         axs[2][i].plot(inp[2])
     return fig
 
-    # if not (os.path.isdir("visualization")):
-    #     os.makedirs("visualization")
-    # plt.savefig("visualization/interpolation.png")
 
-
-def visualize_loss(loss_1, loss_2, first_legend, second_legend, y_label):
+def visualize_loss(loss_1, loss_2, first_legend, second_legend, y_label, model_prefix):
     plt.figure(figsize=(10, 5))
     plt.title("{} and {} Loss During Training".format(first_legend, second_legend))
     plt.plot(loss_1, label=first_legend)
@@ -66,12 +62,10 @@ def visualize_loss(loss_1, loss_2, first_legend, second_legend, y_label):
     plt.tight_layout()
     plt.legend()
     plt.show()
-    if not (os.path.isdir("visualization")):
-        os.makedirs("visualization")
-    plt.savefig("visualization/loss.png")
+    plt.savefig("./ecg_model/"+model_prefix+"/loss.png")
 
 
-def latent_space_interpolation(model, logger, global_step, n_samples=5):
+def latent_space_interpolation(model, label, logger, global_step, n_samples=5):
     z_test = sample_noise(2)
     with torch.no_grad():
         interpolates = []
@@ -80,9 +74,9 @@ def latent_space_interpolation(model, logger, global_step, n_samples=5):
             interpolates.append(interpolate_vec)
 
         interpolates = torch.stack(interpolates)
-        generated = model(interpolates)
+        generated = model(interpolates, label)
 
-    logger.add_figure('generated ecgs', plot_ecgs(generated), global_step)
+    logger.add_figure('label_{}/generated ecgs'.format(label), plot_ecgs(generated, label), global_step)
 
 
 #############################
@@ -123,7 +117,7 @@ def weights_init(m):
 # Creating Data Loader and Sampler
 #############################
 class WavDataLoader:
-    def __init__(self, class_name, input_size, fold_idx, data_dir, sample, equal, smooth, filter, batch_size, dtype="train"):
+    def __init__(self, class_name, input_size, fold_idx, data_dir, sample, equal, smooth, filter, batch_size, dtype):
 
         if sample:
             stype = "gan_sample"

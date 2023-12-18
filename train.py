@@ -44,7 +44,7 @@ class WaveGan_GP(object):
         self.validate = validate
         self.n_samples_per_batch = len(train_loader)
 
-        self.logger = SummaryWriter("./ecg_model")
+        self.logger = SummaryWriter("./ecg_model/"+model_prefix)
 
     def calculate_discriminator_loss(self, real, generated):
         disc_out_gen = self.discriminator(generated)
@@ -52,8 +52,6 @@ class WaveGan_GP(object):
 
         alpha = torch.FloatTensor(batch_size, 1, 1).uniform_(0, 1).to(device)
         alpha = alpha.expand(batch_size, real.size(1), real.size(2))
-
-        print(real.data.shape, generated.data.shape, alpha.shape)
 
         interpolated = (1 - alpha) * real.data + (alpha) * generated.data[:batch_size]
         interpolated = Variable(interpolated, requires_grad=True)
@@ -107,7 +105,7 @@ class WaveGan_GP(object):
             device
         )  # used to save samples every few epochs
 
-        gan_model_name = "./ecg_model/gan_{}.tar".format(model_prefix)
+        gan_model_name = "./ecg_model/{}/gan.tar".format(model_prefix)
 
         first_iter = 0
         if take_backup and os.path.isfile(gan_model_name):
@@ -137,7 +135,7 @@ class WaveGan_GP(object):
                 real_signal, label = next(self.train_loader)
                 # need to add mixed signal and flag
                 noise = sample_noise(batch_size * generator_batch_size_factor)
-                generated = self.generator(noise)
+                generated = self.generator(noise, label)
                 #############################
                 # Calculating discriminator loss and updating discriminator
                 #############################
@@ -151,10 +149,10 @@ class WaveGan_GP(object):
 
             if self.validate and iter_indx % store_cost_every == 0:
                 self.disable_all()
-                val_data = next(self.val_loader)
+                val_data, val_label = next(self.val_loader)
                 val_real = val_data
                 with torch.no_grad():
-                    val_discriminator_output = self.discriminator(val_real)
+                    val_discriminator_output = self.discriminator(val_real.to(device).data)
                     val_generator_cost = val_discriminator_output.mean()
                     self.valid_g_cost.append(val_generator_cost.item())
 
@@ -166,7 +164,7 @@ class WaveGan_GP(object):
             self.apply_zero_grad()
             self.enable_gen_disable_disc()
             noise = sample_noise(batch_size * generator_batch_size_factor)
-            generated = self.generator(noise)
+            generated = self.generator(noise, label)
             discriminator_output_fake = self.discriminator(generated)
             generator_cost = -discriminator_output_fake.mean()
             generator_cost.backward()
@@ -198,8 +196,9 @@ class WaveGan_GP(object):
                 update_optimizer_lr(self.optimizer_g, lr_g, decay)
 
             if iter_indx % save_samples_every == 0:
-                with torch.no_grad():
-                    latent_space_interpolation(self.generator, logger=self.logger, global_step=iter_indx, n_samples=2) 
+                for label_i in [0,1]:
+                    with torch.no_grad():
+                        latent_space_interpolation(self.generator, label_i, logger=self.logger, global_step=iter_indx, n_samples=3) 
 
             if take_backup and iter_indx % backup_every_n_iters == 0:
                 saving_dict = {
@@ -219,16 +218,17 @@ class WaveGan_GP(object):
 
 
 if __name__ == "__main__":
-    train_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=0, 
+    train_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=fold_idx, 
                                  data_dir='/home/jovyan/isviridov/gans/gan_ecg/data/', 
                                  sample=True, equal=False, smooth=False, filter=False, batch_size=batch_size, dtype="train")
-    val_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=0, 
+    val_loader = WavDataLoader(class_name="MI", input_size=2560, fold_idx=fold_idx, 
                                  data_dir='/home/jovyan/isviridov/gans/gan_ecg/data/', 
                                  sample=True, equal=False, smooth=False, filter=False, batch_size=batch_size, dtype="val")
 
     wave_gan = WaveGan_GP(train_loader, val_loader)
     wave_gan.train()
     visualize_loss(
-        wave_gan.g_cost, wave_gan.valid_g_cost, "Train", "Val", "Negative Critic Loss"
+        wave_gan.g_cost, wave_gan.valid_g_cost, "Train", "Val", "Negative Critic Loss", model_prefix
     )
-    latent_space_interpolation(wave_gan.generator, n_samples=5)
+    for label_i in [0,1]:
+        latent_space_interpolation(wave_gan.generator, label_i, logger=wave_gan.logger, global_step=n_iterations, n_samples=3)
